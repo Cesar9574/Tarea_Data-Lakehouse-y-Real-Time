@@ -1,0 +1,11 @@
+services:
+  freshmart:
+    build: .
+    container_name: freshmart_lakehouse_spark
+    working_dir: /app
+    volumes:
+      - ./:/app
+    environment:
+      - PYSPARK_PYTHON=python
+      - PYSPARK_DRIVER_PYTHON=python
+    command: tail -f /dev/null
