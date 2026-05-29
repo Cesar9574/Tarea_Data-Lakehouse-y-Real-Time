@@ -1,144 +1,135 @@
-# FreshMart DataOps Lakehouse — Apache Spark + Delta Lake
+# FreshMart Real-Time Analytics — Apache Kafka + Spark Streaming
 
-Proyecto académico que implementa una arquitectura **Data Lakehouse** con patrón **Medallion** (Bronze → Silver → Gold) para **FreshMart**, una cadena de supermercados centroamericana con operaciones en Guatemala, El Salvador, Honduras, Nicaragua y Costa Rica.
+Proyecto académico que implementa un pipeline de **procesamiento en tiempo real** para **FreshMart**, la cadena de supermercados centroamericana. Cada vez que un cliente realiza una compra en cualquier sucursal de Guatemala, El Salvador, Honduras, Nicaragua o Costa Rica, el evento fluye en milisegundos a través de Kafka y es procesado por Spark Streaming para generar KPIs ejecutivos en vivo.
 
-El sistema genera **1,000,000 de transacciones de ventas simuladas** y las procesa con Apache Spark y Delta Lake, produciendo tablas analíticas listas para consumo por dashboards e IA.
+Este proyecto es la continuación del **FreshMart DataOps Lakehouse** (proyecto anterior), completando la arquitectura de datos de extremo a extremo.
 
 ---
 
-## Tecnologías utilizadas
+## Arquitectura del Pipeline
 
-- Docker y Docker Compose
-- Python 3.11
-- Apache Spark 3.5 / PySpark
-- Delta Lake 3.1
-- Arquitectura Medallion: Bronze, Silver y Gold
+```
+Sucursales POS          Kafka               Spark Streaming       Consola / Dashboard
+─────────────────  →  ──────────────  →  ──────────────────  →  ─────────────────────
+Eventos de venta       Tópico:             KPIs por ventana        Ingresos en vivo
+en tiempo real         ventas-tiempo-real  deslizante 30s          por país y categoría
+(simulados aquí)       (broker local)      cada 10 segundos
+```
+
+**Componentes:**
+- **Productor Python** — simula el POS de cada sucursal publicando eventos JSON en Kafka
+- **Apache Kafka** — broker de mensajería que desacopla la generación del procesamiento
+- **Spark Structured Streaming** — consume el tópico y calcula KPIs en ventanas temporales
+- **Zookeeper** — coordinador del clúster Kafka
 
 ---
 
 ## Estructura del proyecto
 
 ```text
-freshmart_lakehouse/
+freshmart_streaming/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
 ├── README.md
-├── jobs/
-│   ├── spark_session.py        # Fábrica de SparkSession con Delta Lake
-│   ├── 01_generate_dataset.py  # Generador de 1M de ventas simuladas
-│   ├── 02_bronze.py            # Ingesta cruda sin transformar
-│   ├── 03_silver.py            # Limpieza, tipado y campos derivados
-│   ├── 04_gold.py              # KPIs y tablas analíticas de negocio
-│   ├── 05_queries.py           # Verificación de resultados Gold
-│   └── run_pipeline.py         # Orquestador del pipeline completo
-├── data/                       # CSV crudo generado (gitignore)
-├── delta/                      # Tablas Delta Lake Bronze/Silver/Gold
-└── output/                     # CSV de evidencias por tabla Gold
+├── producer/
+│   └── productor_ventas.py     # Publica eventos de compra en Kafka
+└── consumer/
+    └── consumidor_streaming.py # Spark lee Kafka y calcula KPIs en tiempo real
 ```
+
+---
+
+## KPIs calculados en tiempo real
+
+El consumidor Spark genera tres tablas de métricas sobre **ventanas deslizantes de 30 segundos** (actualizadas cada 10s):
+
+| KPI | Descripción |
+|-----|-------------|
+| **KPI Global** | Transacciones, ingresos totales (GTQ), ticket promedio, unidades vendidas |
+| **KPI por País** | Ingresos y transacciones desglosados por los 5 países centroamericanos |
+| **KPI por Categoría** | Categorías de producto más activas (Granos, Lácteos, Bebidas, etc.) |
 
 ---
 
 ## Requisitos previos
 
-1. Tener **Docker Desktop** instalado y en ejecución.
-2. Abrir una terminal (PowerShell en Windows, bash en Mac/Linux) dentro de la carpeta del proyecto.
+- Docker Desktop instalado y en ejecución
+- Terminal PowerShell (Windows) o bash (Mac/Linux)
 
 ---
 
 ## Ejecución paso a paso
 
-### 1. Construir la imagen Docker
+### 1. Construir las imágenes
 
 ```powershell
 docker compose build
 ```
 
-### 2. Levantar el contenedor en segundo plano
+### 2. Levantar Kafka, Zookeeper y el contenedor de la app
 
 ```powershell
 docker compose up -d
 ```
 
-### 3. Ingresar al contenedor
+### 3. Verificar que los tres contenedores estén activos
 
 ```powershell
-docker exec -it freshmart_lakehouse_spark bash
+docker ps
 ```
+Deberías ver: `fm_zookeeper`, `fm_kafka`, `fm_app`
 
-### 4. Prueba rápida (10,000 registros)
+### 4. Crear el tópico Kafka
 
-Recomendado para verificar que todo funciona antes del run completo:
-
+```powershell
+docker exec -it fm_kafka bash
+```
+Dentro del contenedor Kafka:
 ```bash
-python jobs/run_pipeline.py --rows 10000
+kafka-topics.sh --create --topic ventas-tiempo-real --bootstrap-server localhost:9092 --partitions 3 --replication-factor 1
+kafka-topics.sh --list --bootstrap-server localhost:9092
+```
+Sal con `exit`.
+
+### 5. Abrir dos terminales
+
+**Terminal A — Consumidor Spark (inícialo primero):**
+```powershell
+docker exec -it fm_app bash
+python consumer/consumidor_streaming.py --broker fm_kafka:9092
 ```
 
-### 5. Pipeline completo con 1 millón de registros
-
-```bash
-python jobs/run_pipeline.py --rows 1000000
+**Terminal B — Productor de eventos:**
+```powershell
+docker exec -it fm_app bash
+python producer/productor_ventas.py --broker fm_kafka:9092 --intervalo 1
 ```
 
----
+### 6. Observar los KPIs en vivo
 
-## Resultados esperados
-
-Al finalizar el pipeline correctamente se generan estas rutas:
-
-```text
-data/
-  ventas_crudas.csv
-
-delta/
-  bronze/ventas_raw/
-  silver/ventas_limpias/
-  gold/kpis_globales/
-  gold/ventas_por_categoria/
-  gold/ventas_por_pais/
-  gold/ventas_por_trimestre/
-  gold/top10_productos/
-  gold/ventas_por_canal/
-
-output/
-  kpis_globales/
-  ventas_por_categoria/
-  ventas_por_pais/
-  ventas_por_trimestre/
-  top10_productos/
-  ventas_por_canal/
-```
+En la Terminal A verás tablas actualizándose cada 10 segundos con los KPIs calculados por Spark sobre los eventos que llegan desde el productor.
 
 ---
 
 ## Evidencias recomendadas (capturas de pantalla)
 
-1. `docker compose build` — construcción exitosa de la imagen
-2. `docker compose up -d` y `docker ps` — contenedor activo
-3. Ejecución del pipeline: `python jobs/run_pipeline.py --rows 1000000`
-4. Carpeta `delta/` mostrando las tres capas Medallion
-5. Carpeta `output/` con los CSV de resultados
-6. Consola con los KPIs globales y consultas Gold impresas
+1. `docker compose build` — construcción exitosa
+2. `docker ps` — tres contenedores activos
+3. Creación del tópico `ventas-tiempo-real` y verificación con `--list`
+4. Terminal del productor mostrando eventos publicados en tiempo real
+5. Terminal del consumidor mostrando tablas de KPIs actualizándose (KPI Global, por País, por Categoría)
+6. Ambas terminales simultáneas (si puedes hacer captura de pantalla dividida)
 
 ---
 
-## Explicación de cada capa
+## Explicación de conceptos clave
 
-| Capa | Responsabilidad |
-|------|----------------|
-| **Bronze** | Almacena el CSV crudo sin ninguna modificación. Garantiza inmutabilidad y trazabilidad del origen. |
-| **Silver** | Limpia duplicados, convierte tipos, estandariza texto y calcula el campo `total_gtq`. |
-| **Gold** | Genera 6 tablas analíticas: KPIs globales, ventas por categoría, por país, por trimestre, top productos y participación por canal de venta. |
+**¿Por qué Kafka y no simplemente llamar directo a Spark?**
+Kafka actúa como buffer tolerante a fallos entre los sistemas que generan eventos y los que los procesan. Si Spark cae o se reinicia, los mensajes no se pierden — siguen en Kafka hasta que son consumidos. Esto es esencial en producción.
 
----
+**¿Qué es una ventana deslizante (Sliding Window)?**
+En lugar de procesar evento por evento, Spark agrupa los eventos de los últimos N segundos y calcula métricas sobre ese grupo. Con una ventana de 30s que desliza cada 10s, cada batch incluye los últimos 30 segundos de datos, pero se publica cada 10 segundos — balance entre frescura y estabilidad del KPI.
 
-## Dataset simulado
-
-El dataset representa ventas de supermercado con los siguientes atributos:
-
-- **20 productos** de categorías como Granos, Lácteos, Carnes, Higiene y Bebidas
-- **5 países** centroamericanos
-- **4 canales**: Caja Presencial, App Móvil, Página Web, Kiosco Autoservicio
-- **4 métodos de pago**: Efectivo, Tarjeta Débito, Tarjeta Crédito, Transferencia QR
-- **50 sucursales** distribuidas regionalmente
-- Precios en **Quetzales (GTQ)** con variación realista de ±15%
+**Diferencia con el proyecto Lakehouse anterior:**
+El Lakehouse procesa millones de registros históricos en batch (minutos/horas). El pipeline de streaming procesa cada venta en menos de un segundo. Ambos son complementarios: streaming para alertas y dashboards en vivo, batch para reportes históricos y modelos de IA.

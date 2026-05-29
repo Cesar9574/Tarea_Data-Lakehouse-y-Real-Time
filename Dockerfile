@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instalar Java (requerido por Apache Spark) y utilidades básicas
+# Java es requerido por Apache Spark
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-jdk \
     procps \
